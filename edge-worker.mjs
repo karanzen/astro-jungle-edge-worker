@@ -139,7 +139,7 @@ async function crawlListing(page, cfg, onProduct) {
       if (!title || (pe && pe.textContent && title.includes(pe.textContent.trim()))) { // anchor used as title source: image alt, else URL slug
         const img = t.querySelector('img[alt]') || card.querySelector('img[alt]');
         title = (img && img.alt.trim().length > 8) ? img.alt.trim() : '';
-        if (!title && href) { const seg = href.split('?')[0].replace(/\/p$/, '').split('/').filter(Boolean).pop() || ''; title = decodeURIComponent(seg).replace(/[-_]+/g, ' ').replace(/\b([a-z])/g, (m) => m.toUpperCase()); }
+        if (!title && href) { const seg = href.split('?')[0].replace(/\/p$/, '').split('/').filter(Boolean).pop() || ''; title = decodeURIComponent(seg).replace(/\b(\d)-(\d)\b/g, '$1.$2').replace(/[-_]+/g, ' ').replace(/\b([a-z])/g, (m) => m.toUpperCase()); }
       }
       items.push({ title, price: pe ? pe.textContent.trim() : null, url: href, available: !/\b(out of stock|sold out|notify me)\b/i.test(card.innerText) });
     }
