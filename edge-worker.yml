@@ -1,0 +1,23 @@
+# Astro Jungle Edge — browser worker on a free GitHub Actions schedule.
+# Put this file at .github/workflows/edge-worker.yml in a PRIVATE repo that contains edge-worker.mjs.
+# Repository secrets: EDGE_ENDPOINT (https://edge.astrojungles.com/wp-json/aje/v1), EDGE_KEY_BEST, EDGE_KEY_EUREKA, EDGE_KEY_XCITE
+name: Edge worker
+on:
+  schedule:
+    - cron: '0 23 * * *'   # 02:00 Kuwait, daily (before the 06:00 server-side run and the 08:00 report)
+  workflow_dispatch:
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        key: [EDGE_KEY_BEST, EDGE_KEY_EUREKA, EDGE_KEY_XCITE]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm i playwright@1.47.0 && npx playwright install --with-deps chromium
+      - run: node edge-worker.mjs --endpoint "${{ secrets.EDGE_ENDPOINT }}" --key "${{ secrets[matrix.key] }}" --concurrency 1
