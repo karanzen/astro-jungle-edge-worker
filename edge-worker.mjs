@@ -205,10 +205,10 @@ async function crawlListing(page, cfg, onProduct) {
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36', locale: 'en-KW' });
   await ctx.route('**/*', (route) => (/\.(png|jpe?g|gif|webp|svg|woff2?|ttf|mp4)(\?|$)/i.test(route.request().url()) ? route.abort() : route.continue()));
-  let i = 0, total = 0, batch = [];
+  let i = 0, total = 0, batch = [], failed = []; // failed: hand-linked pages whose price could not be read (server flags them for automation)
   const flush = async (final = false) => {
     if (!batch.length && !final) return;
-    const res = await api('/ingest', { method: 'POST', body: JSON.stringify({ products: batch, final, started, total }) });
+    const res = await api('/ingest', { method: 'POST', body: JSON.stringify({ products: batch, final, started, total, failed: final ? failed : undefined }) });
     total += res.upserted || 0; batch = [];
     if (final) console.log(`Done. ${total} products recorded; ${res.matched ?? 0} matched to the client's catalogue.`);
   };
@@ -220,8 +220,8 @@ async function crawlListing(page, cfg, onProduct) {
         const r = await extract(page, url, cfg); const price = num(r.price);
         if (DEBUG) { console.log(JSON.stringify(r)); try { await page.screenshot({ path: 'edge-debug.png', fullPage: false }); console.log('  screenshot: edge-debug.png'); } catch {} }
         if (r.title && price) { batch.push({ key: manualKey[url] || r.sku || url, title: r.title.replace(/\s+/g, ' ').slice(0, 300), price, brand: r.brand || undefined, sku: r.sku || undefined, available: r.available !== false, url, image: r.image || undefined }); }
-        else console.log(`  skip (no price) ${url}`);
-      } catch (e) { console.log(`  fail ${url}: ${e.message.split('\n')[0]}`); }
+        else { console.log(`  skip (no price) ${url}`); if (manualKey[url]) failed.push({ key: manualKey[url], url, reason: 'no price read' }); }
+      } catch (e) { console.log(`  fail ${url}: ${e.message.split('\n')[0]}`); if (manualKey[url]) failed.push({ key: manualKey[url], url, reason: e.message.split('\n')[0].slice(0, 100) }); }
       if (batch.length >= 50) await flush();
       await sleep(cfg.delay_ms || 600);
       if (i % 25 === 0) console.log(`  ${i}/${urls.length}`);
@@ -232,8 +232,8 @@ async function crawlListing(page, cfg, onProduct) {
     const page = await ctx.newPage();
     await crawlListing(page, cfg, (prod) => { batch.push(prod); });
     for (const m of cfg.manual_urls || []) { // competitor pages linked by hand in the app — refresh them individually
-      try { const r = await extract(page, m.url, cfg); const price = num(r.price); if (r.title && price) batch.push({ key: m.key, title: r.title.replace(/\s+/g, ' ').slice(0, 300), price, available: r.available !== false, url: m.url }); else console.log(`  manual link: no price read for ${m.url}`); }
-      catch (e) { console.log(`  manual link fail ${m.url}: ${e.message.split('\n')[0]}`); }
+      try { const r = await extract(page, m.url, cfg); const price = num(r.price); if (r.title && price) batch.push({ key: m.key, title: r.title.replace(/\s+/g, ' ').slice(0, 300), price, available: r.available !== false, url: m.url }); else { console.log(`  manual link: no price read for ${m.url}`); failed.push({ key: m.key, url: m.url, reason: 'no price read' }); } }
+      catch (e) { console.log(`  manual link fail ${m.url}: ${e.message.split('\n')[0]}`); failed.push({ key: m.key, url: m.url, reason: e.message.split('\n')[0].slice(0, 100) }); }
       await sleep(cfg.delay_ms || 600);
     }
     await page.close();
