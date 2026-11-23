@@ -135,7 +135,13 @@ async function crawlListing(page, cfg, onProduct) {
       const pe = [...card.querySelectorAll(lprice)].find((e) => /\d/.test(e.textContent) && !e.closest('.ng-hide') && e.offsetParent !== null) || [...card.querySelectorAll(lprice)].find((e) => /\d/.test(e.textContent));
       const a = t.closest('a[href]') || card.querySelector('a[href]');
       const href = a ? a.href : null;
-      items.push({ title: t.textContent.trim(), price: pe ? pe.textContent.trim() : null, url: href, available: !/\b(out of stock|sold out|notify me)\b/i.test(card.innerText) });
+      let title = t.tagName === 'A' ? '' : t.textContent.trim();
+      if (!title || (pe && pe.textContent && title.includes(pe.textContent.trim()))) { // anchor used as title source: image alt, else URL slug
+        const img = t.querySelector('img[alt]') || card.querySelector('img[alt]');
+        title = (img && img.alt.trim().length > 8) ? img.alt.trim() : '';
+        if (!title && href) { const seg = href.split('?')[0].replace(/\/p$/, '').split('/').filter(Boolean).pop() || ''; title = decodeURIComponent(seg).replace(/[-_]+/g, ' ').replace(/\b([a-z])/g, (m) => m.toUpperCase()); }
+      }
+      items.push({ title, price: pe ? pe.textContent.trim() : null, url: href, available: !/\b(out of stock|sold out|notify me)\b/i.test(card.innerText) });
     }
     return items;
   }, { ltitle: sel.ltitle || 'a', lprice: sel.lprice || '.price', lcard: sel.lcard || null });
@@ -176,7 +182,10 @@ async function crawlListing(page, cfg, onProduct) {
           if (count === last) { if (++stable >= 3) break; } else { stable = 0; last = count; }
         }
         const items = await readCards(page); const n = collect(items, url); total += n;
-        if (DEBUG) console.log(`    ${items.length} cards, ${n} new`);
+        if (DEBUG) {
+          console.log(`    ${items.length} cards, ${n} new`);
+          if (!items.length) { const info = await page.evaluate(({ lt, lp }) => ({ title: document.title, url: location.href, titleEls: document.querySelectorAll(lt).length, priceEls: document.querySelectorAll(lp).length, cardHtml: (() => { let e = document.querySelector(lp); for (let k = 0; k < 4 && e && e.parentElement; k++) e = e.parentElement; return e ? e.outerHTML.replace(/\s+/g, ' ').slice(0, 1200) : null; })() }), { lt: sel.ltitle, lp: sel.lprice }); console.log('    debug: ' + JSON.stringify(info)); try { await page.screenshot({ path: 'edge-debug.png' }); console.log('    screenshot: edge-debug.png'); } catch {} }
+        }
       }
     } catch (e) { console.log(`  fail ${url}: ${e.message.split('\n')[0]}`); }
     await sleep(cfg.delay_ms || 600);
