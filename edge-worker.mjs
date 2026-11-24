@@ -20,12 +20,20 @@ const DEBUG = process.argv.includes('--debug');
 const CONC = Math.max(1, Math.min(4, parseInt(arg('--concurrency', '2'), 10)));
 if (!ENDPOINT || !KEY) { console.error('Usage: node edge-worker.mjs --endpoint <url>/wp-json/aje/v1 --key <api key>'); process.exit(1); }
 
-const api = async (path, opts = {}) => {
-  const r = await fetch(ENDPOINT + path, { ...opts, headers: { 'Content-Type': 'application/json', 'X-AJE-Key': KEY, ...(opts.headers || {}) } });
-  if (!r.ok) throw new Error(`${path} -> HTTP ${r.status}: ${await r.text()}`);
-  return r.json();
-};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// API calls retry on server hiccups (5xx, network) — a single bad response must not kill a multi-hour crawl.
+const api = async (path, opts = {}, tries = 4) => {
+  for (let i = 1; ; i++) {
+    try {
+      const r = await fetch(ENDPOINT + path, { ...opts, headers: { 'Content-Type': 'application/json', 'X-AJE-Key': KEY, ...(opts.headers || {}) } });
+      if (!r.ok) { const body = (await r.text()).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 160); const e = new Error(`${path} -> HTTP ${r.status}: ${body}`); e.retry = r.status >= 500 || r.status === 429; throw e; }
+      return r.json();
+    } catch (e) {
+      if (i >= tries || e.retry === false) throw e;
+      const wait = 15000 * i; console.log(`  ${path} failed (${e.message.slice(0, 120)}) — retrying in ${wait / 1000}s`); await sleep(wait);
+    }
+  }
+};
 const num = (s) => { if (s == null) return null; const m = String(s).replace(/,/g, '').match(/\d+(?:\.\d+)?/); return m ? parseFloat(m[0]) : null; };
 
 async function sitemapUrls(cfg) {
@@ -208,7 +216,9 @@ async function crawlListing(page, cfg, onProduct) {
   let i = 0, total = 0, batch = [], failed = []; // failed: hand-linked pages whose price could not be read (server flags them for automation)
   const flush = async (final = false) => {
     if (!batch.length && !final) return;
-    const res = await api('/ingest', { method: 'POST', body: JSON.stringify({ products: batch, final, started, total, failed: final ? failed : undefined }) });
+    let res;
+    try { res = await api('/ingest', { method: 'POST', body: JSON.stringify({ products: batch, final, started, total, failed: final ? failed : undefined }) }); }
+    catch (e) { if (final) throw e; console.log(`  ingest still failing, keeping ${batch.length} products for the next flush: ${e.message.slice(0, 120)}`); return; }
     total += res.upserted || 0; batch = [];
     if (final) console.log(`Done. ${total} products recorded; ${res.matched ?? 0} matched to the client's catalogue.`);
   };
