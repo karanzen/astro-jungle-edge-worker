@@ -145,13 +145,13 @@ async function crawlListing(page, cfg, onProduct) {
     }
     return items;
   }, { ltitle: sel.ltitle || 'a', lprice: sel.lprice || '.price', lcard: sel.lcard || null });
-  const collect = (items, pageUrl) => {
+  const collect = async (items, pageUrl) => {
     let n = 0;
     for (const it of items) {
       const price = num(it.price); if (!it.title || !price || !it.url) continue;
       const m = it.url.match(/\/p\/([^/?#]+)|\/details\/(\d+)/); const key = m ? decodeURIComponent(m[1] || m[2]) : it.url;
       if (seen.has(key)) continue; seen.add(key); n++;
-      onProduct({ key, title: it.title.replace(/\s+/g, ' ').slice(0, 300), price, available: it.available, url: it.url.split('?')[0], sku: m ? key : undefined });
+      await onProduct({ key, title: it.title.replace(/\s+/g, ' ').slice(0, 300), price, available: it.available, url: it.url.split('?')[0], sku: m ? key : undefined });
     }
     return n;
   };
@@ -165,7 +165,7 @@ async function crawlListing(page, cfg, onProduct) {
           await page.goto(u, { waitUntil: 'domcontentloaded', timeout: 45000 });
           try { await page.waitForSelector(sel.ltitle, { timeout: 15000 }); } catch {}
           await sleep(800);
-          const items = await readCards(page); const n = collect(items, u); total += n;
+          const items = await readCards(page); const n = await collect(items, u); total += n;
           if (DEBUG) console.log(`    page ${p}: ${items.length} cards, ${n} new`);
           if (!items.length || n === 0) { if (++empty >= 2) break; } else empty = 0;
           p++; await sleep(cfg.delay_ms || 600);
@@ -181,7 +181,7 @@ async function crawlListing(page, cfg, onProduct) {
           const count = await page.evaluate((q) => document.querySelectorAll(q).length, sel.ltitle);
           if (count === last) { if (++stable >= 3) break; } else { stable = 0; last = count; }
         }
-        const items = await readCards(page); const n = collect(items, url); total += n;
+        const items = await readCards(page); const n = await collect(items, url); total += n;
         if (DEBUG) {
           console.log(`    ${items.length} cards, ${n} new`);
           if (!items.length) { const info = await page.evaluate(({ lt, lp }) => ({ title: document.title, url: location.href, titleEls: document.querySelectorAll(lt).length, priceEls: document.querySelectorAll(lp).length, cardHtml: (() => { let e = document.querySelector(lp); for (let k = 0; k < 4 && e && e.parentElement; k++) e = e.parentElement; return e ? e.outerHTML.replace(/\s+/g, ' ').slice(0, 1200) : null; })() }), { lt: sel.ltitle, lp: sel.lprice }); console.log('    debug: ' + JSON.stringify(info)); try { await page.screenshot({ path: 'edge-debug.png' }); console.log('    screenshot: edge-debug.png'); } catch {} }
@@ -230,14 +230,14 @@ async function crawlListing(page, cfg, onProduct) {
   };
   if (useListing) {
     const page = await ctx.newPage();
-    await crawlListing(page, cfg, (prod) => { batch.push(prod); });
+    // flush every 50 products so progress is kept even if the run is cut short (CI time limits)
+    await crawlListing(page, cfg, async (prod) => { batch.push(prod); if (batch.length >= 50) await flush(); });
     for (const m of cfg.manual_urls || []) { // competitor pages linked by hand in the app — refresh them individually
       try { const r = await extract(page, m.url, cfg); const price = num(r.price); if (r.title && price) batch.push({ key: m.key, title: r.title.replace(/\s+/g, ' ').slice(0, 300), price, available: r.available !== false, url: m.url }); else { console.log(`  manual link: no price read for ${m.url}`); failed.push({ key: m.key, url: m.url, reason: 'no price read' }); } }
       catch (e) { console.log(`  manual link fail ${m.url}: ${e.message.split('\n')[0]}`); failed.push({ key: m.key, url: m.url, reason: e.message.split('\n')[0].slice(0, 100) }); }
       await sleep(cfg.delay_ms || 600);
     }
     await page.close();
-    while (batch.length > 50) { const chunk = batch.splice(0, 50); const res = await api('/ingest', { method: 'POST', body: JSON.stringify({ products: chunk, started }) }); total += res.upserted || 0; }
   } else {
     await Promise.all(Array.from({ length: CONC }, worker));
   }
