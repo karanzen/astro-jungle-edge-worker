@@ -4,7 +4,7 @@
  * Runs anywhere with Node 18+ (your PC, a small VPS, or a free GitHub Actions schedule). Shared web hosting cannot run this.
  *
  *   npm i playwright && npx playwright install chromium
- *   node edge-worker.mjs --endpoint https://edge.astrojungles.com/wp-json/aje/v1 --key <source API key> [--limit 300] [--concurrency 2]
+ *   node edge-worker.mjs --endpoint https://YOUR-EDGE-SITE/wp-json/aje/v1 --key <source API key> [--limit 300] [--concurrency 2]
  *
  * Reads the source config from the plugin, collects product URLs from the sitemap (include/exclude regex from the plugin),
  * renders each page, extracts name/price/stock (JSON-LD -> configured CSS selectors -> currency regex), and posts batches to /ingest.
@@ -20,6 +20,9 @@ const DEBUG = process.argv.includes('--debug');
 const CONC = Math.max(1, Math.min(4, parseInt(arg('--concurrency', '2'), 10)));
 if (!ENDPOINT || !KEY) { console.error('Usage: node edge-worker.mjs --endpoint <url>/wp-json/aje/v1 --key <api key>'); process.exit(1); }
 
+// QUIET: on CI the run log is public for a public repo, so never print the client, the site or any URL — only counts.
+const QUIET = !!process.env.CI && !process.argv.includes('--verbose');
+const h = (u) => QUIET ? '[url]' : u;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // API calls retry on server hiccups (5xx, network) — a single bad response must not kill a multi-hour crawl.
 const api = async (path, opts = {}, tries = 4) => {
@@ -126,7 +129,7 @@ async function crawlListing(page, cfg, onProduct) {
         await page.goto(seed, { waitUntil: 'domcontentloaded', timeout: 45000 }); await sleep(2500);
         const hrefs = await page.evaluate(() => [...document.querySelectorAll('a[href]')].map((a) => a.getAttribute('href')));
         for (const h of hrefs) { if (!h) continue; const u = abs(h.split('#')[0]); const rel = u.replace(base, ''); if (re.test(rel) || re.test(u)) found.add(u.replace(/\/$/, '')); }
-      } catch (e) { console.log(`  discover fail ${seed}: ${e.message.split('\n')[0]}`); }
+      } catch (e) { console.log(`  discover fail ${h(seed)}: ${e.message.split('\n')[0]}`); }
       await sleep(cfg.delay_ms || 600);
     }
     urls = [...found];
@@ -164,7 +167,7 @@ async function crawlListing(page, cfg, onProduct) {
     return n;
   };
   for (const url of urls) {
-    console.log(`  listing ${url}`);
+    if (!QUIET) console.log(`  listing ${url}`);
     try {
       if (paging.startsWith('param:')) {
         const name = paging.slice(6); let p = 0, empty = 0;
@@ -192,10 +195,10 @@ async function crawlListing(page, cfg, onProduct) {
         const items = await readCards(page); const n = await collect(items, url); total += n;
         if (DEBUG) {
           console.log(`    ${items.length} cards, ${n} new`);
-          if (!items.length) { const info = await page.evaluate(({ lt, lp }) => ({ title: document.title, url: location.href, titleEls: document.querySelectorAll(lt).length, priceEls: document.querySelectorAll(lp).length, cardHtml: (() => { let e = document.querySelector(lp); for (let k = 0; k < 4 && e && e.parentElement; k++) e = e.parentElement; return e ? e.outerHTML.replace(/\s+/g, ' ').slice(0, 1200) : null; })() }), { lt: sel.ltitle, lp: sel.lprice }); console.log('    debug: ' + JSON.stringify(info)); try { await page.screenshot({ path: 'edge-debug.png' }); console.log('    screenshot: edge-debug.png'); } catch {} }
+          if (!items.length && !QUIET) { const info = await page.evaluate(({ lt, lp }) => ({ title: document.title, url: location.href, titleEls: document.querySelectorAll(lt).length, priceEls: document.querySelectorAll(lp).length, cardHtml: (() => { let e = document.querySelector(lp); for (let k = 0; k < 4 && e && e.parentElement; k++) e = e.parentElement; return e ? e.outerHTML.replace(/\s+/g, ' ').slice(0, 1200) : null; })() }), { lt: sel.ltitle, lp: sel.lprice }); console.log('    debug: ' + JSON.stringify(info)); try { await page.screenshot({ path: 'edge-debug.png' }); console.log('    screenshot: edge-debug.png'); } catch {} }
         }
       }
-    } catch (e) { console.log(`  fail ${url}: ${e.message.split('\n')[0]}`); }
+    } catch (e) { console.log(`  fail ${h(url)}: ${e.message.split('\n')[0]}`); }
     await sleep(cfg.delay_ms || 600);
   }
   return total;
@@ -205,7 +208,7 @@ async function crawlListing(page, cfg, onProduct) {
   const cfg = await api('/config');
   const only = arg('--url', '');
   const useListing = !only && cfg.selectors && cfg.selectors.listing;
-  console.log(`Source: ${cfg.source} (${cfg.client}) — ${only ? 'single URL test' : useListing ? 'reading category listings' : 'reading sitemap…'}`);
+  console.log(`Source: ${QUIET ? '#' + (cfg.source_id ?? '?') : cfg.source + ' (' + cfg.client + ')'} — ${only ? 'single URL test' : useListing ? 'reading category listings' : 'reading sitemap…'}`);
   const manualKey = {}; for (const m of cfg.manual_urls || []) manualKey[m.url] = m.key;
   const urls = only ? [only] : useListing ? [] : [...(await sitemapUrls(cfg)).slice(0, LIMIT || undefined), ...Object.keys(manualKey)];
   if (!useListing) console.log(`${urls.length} product URLs`);
@@ -230,8 +233,8 @@ async function crawlListing(page, cfg, onProduct) {
         const r = await extract(page, url, cfg); const price = num(r.price);
         if (DEBUG) { console.log(JSON.stringify(r)); try { await page.screenshot({ path: 'edge-debug.png', fullPage: false }); console.log('  screenshot: edge-debug.png'); } catch {} }
         if (r.title && price) { batch.push({ key: manualKey[url] || r.sku || url, title: r.title.replace(/\s+/g, ' ').slice(0, 300), price, brand: r.brand || undefined, sku: r.sku || undefined, available: r.available !== false, url, image: r.image || undefined }); }
-        else { console.log(`  skip (no price) ${url}`); if (manualKey[url]) failed.push({ key: manualKey[url], url, reason: 'no price read' }); }
-      } catch (e) { console.log(`  fail ${url}: ${e.message.split('\n')[0]}`); if (manualKey[url]) failed.push({ key: manualKey[url], url, reason: e.message.split('\n')[0].slice(0, 100) }); }
+        else { console.log(`  skip (no price) ${h(url)}`); if (manualKey[url]) failed.push({ key: manualKey[url], url, reason: 'no price read' }); }
+      } catch (e) { console.log(`  fail ${h(url)}: ${e.message.split('\n')[0]}`); if (manualKey[url]) failed.push({ key: manualKey[url], url, reason: e.message.split('\n')[0].slice(0, 100) }); }
       if (batch.length >= 50) await flush();
       await sleep(cfg.delay_ms || 600);
       if (i % 25 === 0) console.log(`  ${i}/${urls.length}`);
@@ -244,7 +247,7 @@ async function crawlListing(page, cfg, onProduct) {
     await crawlListing(page, cfg, async (prod) => { batch.push(prod); if (batch.length >= 50) await flush(); });
     for (const m of cfg.manual_urls || []) { // competitor pages linked by hand in the app — refresh them individually
       try { const r = await extract(page, m.url, cfg); const price = num(r.price); if (r.title && price) batch.push({ key: m.key, title: r.title.replace(/\s+/g, ' ').slice(0, 300), price, available: r.available !== false, url: m.url }); else { console.log(`  manual link: no price read for ${m.url}`); failed.push({ key: m.key, url: m.url, reason: 'no price read' }); } }
-      catch (e) { console.log(`  manual link fail ${m.url}: ${e.message.split('\n')[0]}`); failed.push({ key: m.key, url: m.url, reason: e.message.split('\n')[0].slice(0, 100) }); }
+      catch (e) { console.log(`  manual link fail ${h(m.url)}: ${e.message.split('\n')[0]}`); failed.push({ key: m.key, url: m.url, reason: e.message.split('\n')[0].slice(0, 100) }); }
       await sleep(cfg.delay_ms || 600);
     }
     await page.close();
