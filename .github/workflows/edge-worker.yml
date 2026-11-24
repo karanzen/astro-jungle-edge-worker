@@ -1,6 +1,6 @@
 # Astro Jungle Edge — browser worker on a free GitHub Actions schedule.
 # Put this file at .github/workflows/edge-worker.yml in a PRIVATE repo with edge-worker.mjs at the root.
-# Repository secrets: EDGE_ENDPOINT (https://edge.astrojungles.com/wp-json/aje/v1), EDGE_KEY_BEST, EDGE_KEY_EUREKA, EDGE_KEY_XCITE
+# Repository secrets: EDGE_ENDPOINT (https://YOUR-EDGE-SITE/wp-json/aje/v1), EDGE_KEY_1, EDGE_KEY_2, EDGE_KEY_3 (one per worker source; add more to the matrix as needed)
 name: Edge worker
 on:
   schedule:
@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        key: [EDGE_KEY_BEST, EDGE_KEY_EUREKA, EDGE_KEY_XCITE]
+        key: [EDGE_KEY_1, EDGE_KEY_2, EDGE_KEY_3]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
